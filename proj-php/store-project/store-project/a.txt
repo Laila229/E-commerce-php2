@@ -1,0 +1,171 @@
+<?php
+require_once "Database.php";
+session_start();
+
+$conn = Database::getInstance();
+
+$userId = (int)($_SESSION["user"]["id"] ?? 0);
+$items = [];
+$subtotal = 0.0;
+
+if ($userId > 0) {
+    $stmt = $conn->prepare("
+        SELECT 
+            c.product_id,
+            c.quantity,
+            p.name,
+            p.price,
+            p.discount_percent,
+            p.image
+        FROM cart c
+        JOIN products p ON p.id = c.product_id
+        WHERE c.user_id = ?
+    ");
+    $stmt->bind_param("i", $userId);
+    $stmt->execute();
+    $res = $stmt->get_result();
+
+    while ($row = $res->fetch_assoc()) {
+        $price = (float)$row["price"];
+        $discount = (int)$row["discount_percent"];
+        $final = $discount > 0 ? $price - ($price * $discount / 100) : $price;
+        $lineTotal = $final * (int)$row["quantity"];
+        $subtotal += $lineTotal;
+
+        $items[] = [
+            "product_id" => (int)$row["product_id"],
+            "name" => $row["name"],
+            "image" => $row["image"],
+            "qty" => (int)$row["quantity"],
+            "final_price" => $final,
+            "line_total" => $lineTotal
+        ];
+    }
+    $stmt->close();
+} else {
+    $sessionCart = $_SESSION["cart"] ?? [];
+    $productIds = array_keys($sessionCart);
+
+    if ($productIds) {
+        $placeholders = implode(",", array_fill(0, count($productIds), "?"));
+        $types = str_repeat("i", count($productIds));
+
+        $sql = "
+            SELECT id, name, price, discount_percent, image
+            FROM products
+            WHERE id IN ($placeholders)
+        ";
+
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param($types, ...$productIds);
+        $stmt->execute();
+        $res = $stmt->get_result();
+
+        $map = [];
+        while ($p = $res->fetch_assoc()) {
+            $map[(int)$p["id"]] = $p;
+        }
+        $stmt->close();
+
+        foreach ($sessionCart as $pid => $qty) {
+            $pid = (int)$pid;
+            $qty = (int)$qty;
+            if (!isset($map[$pid])) continue;
+
+            $price = (float)$map[$pid]["price"];
+            $discount = (int)$map[$pid]["discount_percent"];
+            $final = $discount > 0 ? $price - ($price * $discount / 100) : $price;
+            $lineTotal = $final * $qty;
+            $subtotal += $lineTotal;
+
+            $items[] = [
+                "product_id" => $pid,
+                "name" => $map[$pid]["name"],
+                "image" => $map[$pid]["image"],
+                "qty" => $qty,
+                "final_price" => $final,
+                "line_total" => $lineTotal
+            ];
+        }
+    }
+}
+
+?>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cart</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="p-4">
+ 
+
+<div class="container">
+  <h2 class="mb-4">Your Cart</h2>
+
+  <?php if (!$items): ?>
+    <div class="alert alert-info">Cart is empty</div>
+    <a class="btn btn-primary" href="index.php">Back to shop</a>
+  <?php else: ?>
+    <div class="table-responsive">
+      <table class="table align-middle">
+        <thead>
+          <tr>
+            <th>Product</th>
+            <th>Price</th>
+            <th style="width:140px;">Qty</th>
+            <th>Total</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <?php foreach ($items as $it): ?>
+            <tr>
+              <td>
+                <div class="d-flex align-items-center gap-3">
+                  <img src="<?= htmlspecialchars($it["image"]) ?>" style="width:60px;height:60px;object-fit:cover">
+                  <div><?= htmlspecialchars($it["name"]) ?></div>
+                </div>
+              </td>
+              <td>$<?= number_format($it["final_price"], 2) ?></td>
+              <td>
+                <form action="update_cart.php" method="post" class="d-flex gap-2">
+                  <input type="hidden" name="product_id" value="<?= (int)$it["product_id"] ?>">
+                  <input type="number" min="1" name="qty" class="form-control" value="<?= (int)$it["qty"] ?>">
+                  <button class="btn btn-sm btn-success" type="submit">Update</button>
+                </form>
+              </td>
+              <td>$<?= number_format($it["line_total"], 2) ?></td>
+              <td>
+                <form action="remove_from_cart.php" method="post">
+                  <input type="hidden" name="product_id" value="<?= (int)$it["product_id"] ?>">
+                  <button class="btn btn-sm btn-danger" type="submit">Remove</button>
+                </form>
+              </td>
+            </tr>
+          <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="d-flex justify-content-between align-items-center mt-4">
+      <a class="btn btn-outline-primary" href="index.php">Continue shopping</a>
+      <div class="fs-5">
+        Subtotal: <strong>$<?= number_format($subtotal, 2) ?></strong>
+      </div>
+    </div>
+
+    <?php if ($userId <= 0): ?>
+      <div class="alert alert-warning mt-4">
+        You are not logged in. Your cart is saved temporarily.
+        <a href="login.php">Login</a> to save it to your account.
+      </div>
+    <?php endif; ?>
+
+  <?php endif; ?>
+</div>
+
+</body>
+</html>
